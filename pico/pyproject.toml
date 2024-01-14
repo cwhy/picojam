@@ -1,0 +1,49 @@
+[tool.poetry]
+name = "pico"
+version = "0.1.0"
+description = ""
+authors = ["Chen Yu <chenyu.nus@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+jupyter = "^1.0.0"
+mypy = "^1.8.0"
+ipykernel = "^6.28.0"
+ipython = "^8.20.0"
+jax = {extras = ["cuda12-pip"], version = "^0.4.23"}
+polars = "^0.20.3"
+pyarrow = "^14.0.2"
+datasets = {extras = ["jax"], version = "^2.16.1"}
+pillow = "^10.2.0"
+cuda-python = "^12.3.0"
+nvidia-cuda-runtime-cu12 = "^12.3.101"
+nvidia-cuda-nvcc-cu12 = "^12.3.107"
+nvidia-nvml-dev-cu12 = "^12.3.101"
+better-partial = "^1.0.6"
+vega-datasets = "^0.9.0"
+notebook = "^7.0.6"
+bokeh = "^3.3.3"
+hvplot = "^0.9.1"
+pyparsing = "^3.1.1"
+jupyter-bokeh = "^3.0.7"
+optax = "^0.1.7"
+sympy = "^1.12"
+
+[[tool.poetry.source]]
+name = "jorenham/jax_pep503"
+url = "https://jorenham.github.io/jax_pep503/"
+priority = "supplemental"
+
+[[tool.poetry.source]]
+name = "nvidia"
+url = "https://pypi.ngc.nvidia.com"
+priority = "supplemental"
+
+[[tool.poetry.source]]
+name = "PyPI"
+priority = "primary"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
