@@ -3,9 +3,10 @@ from __future__ import annotations
 from typing import Tuple
 
 from jax.random import normal
-from jax.numpy import block, array, eye, ceil, log2
+from jax.numpy import block, array, eye
+from math import ceil, log2
 from jax.typing import ArrayLike
-from random import SafeKey
+from random_utils import SafeKey
 
 def normal_init(rng_key: SafeKey, sd: float, shape: Tuple[int, ...]) -> ArrayLike:
     return normal(rng_key.get(), shape) * sd
