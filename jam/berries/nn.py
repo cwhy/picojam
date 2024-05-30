@@ -23,6 +23,11 @@ def mglu(x, ws):
         x = rmsn(sglu_w(x), **w['rmsn'])
     return x
 
+def mglu_net(x, ws):
+    mglu_ws, sglu_w = ws['mglu'], ws['sglu']
+    x = mglu(x, mglu_ws)
+    return sglu(x, **sglu_w)
+
 
 import init_utils, random_utils
 from init_utils import zerO_init_2D
@@ -66,6 +71,12 @@ def mglu_config(d_in, d_h_layer, d_out, d_h, n_layers, init):
         mglu_layer_config(d_h_layer, d_h, d_out, init),
     ])
 
+
+def mglu_net_config(d_in, d_h_layer, d_out, d_h, n_layers, init):
+    return {
+        "mglu": mglu_config(d_in, d_h_layer, d_out, d_h, n_layers - 1, init),
+        "sglu": sglu_config(d_out, d_h, d_out, init),
+    }
 
 
 
