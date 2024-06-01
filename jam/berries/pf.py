@@ -27,5 +27,8 @@ class PointFreeFunction:
             return PointFreeFunction(compose(self.func, other))
         else:
             raise TypeError("other must be callable or PointFreeFunction")
+    
+    def __getitem__(self, key):
+        return PointFreeFunction(lambda x: self.func(x)[key])
 
 F = PointFreeFunction
