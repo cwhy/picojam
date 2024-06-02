@@ -23,11 +23,22 @@ def mglu(x, ws):
         x = rmsn(sglu_w(x), **w['rmsn'])
     return x
 
+
 def mglu_net(x, ws):
     mglu_ws, sglu_w = ws['mglu'], ws['sglu']
     x = mglu(x, mglu_ws)
     return sglu(x, **sglu_w)
 
+def rmglu(x, ws):
+    for w in ws:
+        sglu_w = F(sglu).f(_, **w['sglu'])
+        x += rmsn(sglu_w(x), **w['rmsn'])
+    return x
+
+def rmglu_net(x, ws):
+    mglu_ws, sglu_w = ws['mglu'], ws['sglu']
+    x = rmglu(x, mglu_ws)
+    return sglu(x, **sglu_w)
 
 import init_utils, random_utils
 from init_utils import zerO_init_2D
