@@ -29,6 +29,14 @@ class PointFreeFunction:
             raise TypeError("other must be callable or PointFreeFunction")
     
     def __getitem__(self, key):
-        return PointFreeFunction(lambda x: self.func(x)[key])
+        return PointFreeFunction(lambda *args: self.func(*args)[key])
+    
+    def swap(self):
+        if self.func.__code__.co_argcount != 2:
+            print(self.func.__code__.co_argcount)
+            raise ValueError("Function must have exactly two arguments to use swap")
+        return PointFreeFunction(lambda x, y: self.func(y, x))
+
+
 
 F = PointFreeFunction

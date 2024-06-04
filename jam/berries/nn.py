@@ -85,8 +85,8 @@ def mglu_config(d_in, d_h_layer, d_out, d_h, n_layers, init):
 
 def mglu_net_config(d_in, d_h_layer, d_out, d_h, n_layers, init):
     return {
-        "mglu": mglu_config(d_in, d_h_layer, d_out, d_h, n_layers - 1, init),
-        "sglu": sglu_config(d_out, d_h, d_out, init),
+        "mglu": mglu_config(d_in, d_h_layer, d_h_layer, d_h, n_layers - 1, init),
+        "sglu": sglu_config(d_h_layer, d_h, d_out, init),
     }
 
 
