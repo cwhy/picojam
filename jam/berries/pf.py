@@ -2,6 +2,7 @@ import functools
 from typing import Callable
 from better_partial import _, partial
 from jax import vmap
+from jax import lax
 
 def compose(f, g):
     return lambda *args, **kw: g(f(*args, **kw))
@@ -16,6 +17,9 @@ class PointFreeFunction:
     
     def vmap(self, *args, **kw):
         return PointFreeFunction(vmap(self.func, *args, **kw))
+    
+    def map(self):
+        return PointFreeFunction(lambda *args, **kw: lax.map(self.func, *args, **kw))
 
     def __call__(self, *args, **kw):
         return self.func(*args, **kw)

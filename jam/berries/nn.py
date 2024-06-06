@@ -44,6 +44,12 @@ import init_utils, random_utils
 from init_utils import zerO_init_2D
 from jax.random import split
 
+def W_config(d_in, d_out, init):
+    return {
+        "size": (d_in, d_out),
+        "init": init,
+    }
+
 
 def sglu_config(d_in, d_h, d_out, init):
     return {
