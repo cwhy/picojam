@@ -57,7 +57,7 @@ def load_supervised_1d(data: str) -> Supervised1D:
 
 def load_supervised_image(data: str) -> ImageClassification:
     if data == "mnist":
-        mnist = load_dataset("ylecun/mnist", cache_dir=cache_dir).with_format("jax")
+        mnist = load_dataset("mnist", cache_dir=cache_dir, trust_remote_code=True).with_format("jax")
         mnistData = mnist['train']
         X_img = mnistData['image']
         y = mnistData['label']
