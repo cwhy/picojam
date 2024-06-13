@@ -30,6 +30,7 @@ matplotlib = "^3.8.2"
 pyqt5-qt = "^5.15.2"
 pyqt5 = "5.15.1"
 ipympl = "^0.9.3"
+scikit-learn = "^1.5.0"
 
 [[tool.poetry.source]]
 name = "jorenham/jax_pep503"
