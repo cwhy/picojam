@@ -1,6 +1,6 @@
 from jax.nn import sigmoid
 from jax.numpy.linalg import norm
-from jax.numpy import sqrt
+from jax.numpy import sqrt, ones
 from pf import F, _
 
 def affine(x, W, b):
@@ -112,7 +112,10 @@ def init_weights(key, configs):
         return tuple(init_weights(k, c) for c, k in zip(configs, keys))
     elif isinstance(configs, dict):
         if "const" in configs:
-            return configs["const"]
+            if "size" in configs:
+                return configs["const"] * ones(configs["size"])
+            else:
+                return configs["const"]
         if "init" in configs:
             return init_weight(key, **configs)
         else:
