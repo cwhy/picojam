@@ -1,9 +1,11 @@
+
 from jax.nn import sigmoid
 from jax.numpy.linalg import norm
-from jax.numpy import sqrt, ones, mean, square, exp
+from jax.numpy import ones, mean, square, exp, sqrt
 from jax.lax import rsqrt
-
+from init_utils import zerO_init_2D, normal_init
 from pf import F, _
+
 
 EPS = 1e-8
 
@@ -11,8 +13,9 @@ def affine(x, W, b):
     return W.T @ x + b
 
 def rmsnorm(w, x, eps=EPS):
-    x_norm = x * rsqrt(mean(square(x)) + eps)
+    x_norm = x * rsqrt(mean(x ** 2) + eps)
     return x_norm * w
+
 
 def swish(x):
     return x * sigmoid(x)
@@ -22,38 +25,10 @@ def sglu(x, wv, wu, wo):
     u = x @ wu
     return (v * u) @ wo
 
-def rmsn(x, d):
-    return  x / (norm(x)/ sqrt(d))
-
 def gaussian_activation(a, x):
     return exp((-0.5 * x ** 2) / a ** 2)
 
-def mglu(x, ws):
-    for w in ws:
-        sglu_w = F(sglu).f(_, **w['sglu'])
-        x = rmsn(sglu_w(x), **w['rmsn'])
-    return x
 
-
-def mglu_net(x, ws):
-    mglu_ws, sglu_w = ws['mglu'], ws['sglu']
-    x = mglu(x, mglu_ws)
-    return sglu(x, **sglu_w)
-
-def rmglu(x, ws):
-    for w in ws:
-        sglu_w = F(sglu).f(_, **w['sglu'])
-        x += rmsn(sglu_w(x), **w['rmsn'])
-    return x
-
-def rmglu_net(x, ws):
-    mglu_ws, sglu_w = ws['mglu'], ws['sglu']
-    x = rmglu(x, mglu_ws)
-    return sglu(x, **sglu_w)
-
-import init_utils, random_utils
-from init_utils import zerO_init_2D
-from jax.random import split
 
 def W_config(d_in, d_out, init):
     return {
@@ -78,36 +53,6 @@ def sglu_config(d_in, d_h, d_out, init):
         },
     }
 
-def rmsn_config(d_out):
-    return {
-        "d": {
-            "const": float(d_out),
-        }
-    }
-
-def mglu_layer_config(d_in, d_h, d_out, init):
-    return {
-        "sglu": sglu_config(d_in, d_h, d_out, init),
-        "rmsn": rmsn_config(d_out),
-    }
-
-
-def mglu_config(d_in, d_h_layer, d_out, d_h, n_layers, init):
-    return tuple([
-        mglu_layer_config(d_in, d_h, d_h_layer, init),
-        *[mglu_layer_config(d_h_layer, d_h, d_h_layer, init)] * (n_layers - 1),
-        mglu_layer_config(d_h_layer, d_h, d_out, init),
-    ])
-
-
-def mglu_net_config(d_in, d_h_layer, d_out, d_h, n_layers, init):
-    return {
-        "mglu": mglu_config(d_in, d_h_layer, d_h_layer, d_h, n_layers - 1, init),
-        "sglu": sglu_config(d_h_layer, d_h, d_out, init),
-    }
-
-
-
 def init_weight(key, configs):
     if "const" in configs:
         if "size" in configs:
@@ -117,7 +62,7 @@ def init_weight(key, configs):
     if "init" in configs:
         init, size = configs["init"], configs["size"]
         if init["type"] == "normal":
-            return init_utils.normal_init(key, init["std"], size)
+            return normal_init(key, init["std"], size)
         elif init["type"] == "zer0":
             return zerO_init_2D(size)
         else:
