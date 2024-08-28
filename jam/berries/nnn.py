@@ -9,6 +9,9 @@ from pf import F, _
 
 EPS = 1e-8
 
+def flatten(x):
+    return x.reshape(-1)
+
 def affine(x, W, b):
     return W.T @ x + b
 
@@ -36,6 +39,7 @@ def W_config(d_in, d_out, init):
         "init": init,
     }
 
+        
 
 def sglu_config(d_in, d_h, d_out, init):
     return {
@@ -61,7 +65,9 @@ def init_weight(key, configs):
             return configs["const"]
     if "init" in configs:
         init, size = configs["init"], configs["size"]
-        if init["type"] == "normal":
+        if init["type"] == "xavier":
+            return normal_init(key, sqrt(2 / (size[0] + size[1])), size)
+        elif init["type"] == "normal":
             return normal_init(key, init["std"], size)
         elif init["type"] == "zer0":
             return zerO_init_2D(size)
