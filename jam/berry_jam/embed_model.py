@@ -131,20 +131,19 @@ def debug_jax(
     return pixel_values
 
 @partial(jax.jit, static_argnums=(0, ))
-def train_step(optimizer: optax.GradientTransformation, coords: Array, params: Dict[str, Array], opt_state: Any, indices: Array, flattened_images: Array) -> Tuple[optax.Params, optax.OptState, Array]:
+def train_step(optimizer: optax.GradientTransformation, coords: Array, params: Dict[str, Array], opt_state: Any, indices: Array, batch_images: Array) -> Tuple[optax.Params, optax.OptState, Array]:
     # Use the provided img_indices, which now refer to the fixed-order embeddings.
-    batch_images = flattened_images[indices]
-    def loss_batch(params):
-        batch_img_emb = params['img_embed'][indices] 
+    def loss_batch(p):
+        batch_img_emb = p['img_embed'][indices] 
 
         def loss_pixel(img_emb, pos_emb, target_pixel):
-            predicted =  pix_val_forward(img_emb, pos_emb, params)
+            predicted =  pix_val_forward(img_emb, pos_emb, p)
             return (predicted - target_pixel) ** 2
 
         # Compute loss for each image in the batch
         def loss_1(img_emb, target):
             # img_emb += target @ params['img_map'] 
-            pos_embs = get_positional_embeddings(**params, coords=coords)
+            pos_embs = get_positional_embeddings(**p, coords=coords)
             return jax.vmap(loss_pixel, in_axes=(None, 0, 0))(img_emb, pos_embs, target)
         return jnp.mean(jax.vmap(loss_1, in_axes=(0, 0))(batch_img_emb, batch_images))
     
@@ -193,7 +192,7 @@ def train_model(key: Array, coords: Array, flattened_images: Array,
             indices = shuffled_indices[start_idx:end_idx]
             
             params, opt_state, loss = train_step(optimizer, coords, params, opt_state,  
-                                                 indices, shuffled_images)
+                                                 indices, shuffled_images[start_idx:end_idx])
             epoch_loss += loss #.block_until_ready()
         
         # Average loss for the epoch
