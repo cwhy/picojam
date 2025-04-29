@@ -6,64 +6,67 @@ import jax.numpy as jnp
 import optax
 from typing import Dict, List, Any, Tuple
 
+from pos_net import create_coordinate_indices
+
 from wandb_vis.embed_utils import log_visualizations
 from wandb_vis.shared_utils import log_epoch_metrics
+import os, sys
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from berries.random_utils import infinite_safe_keys, infinite_safe_keys_from_key
 
-def create_coordinate_indices(height: int, width: int) -> Array:
-    y_indices = jnp.arange(height)
-    x_indices = jnp.arange(width)
-    
-    y_grid, x_grid = jnp.meshgrid(y_indices, x_indices, indexing='ij')
-    coords = jnp.stack([y_grid.flatten(), x_grid.flatten()], axis=1)
-    
-    coords = coords.astype(jnp.float32)
-    coords = coords / jnp.array([height - 1, width - 1])
-    
-    return coords
 
 
 def init_model_params(key: Array, num_images: int, img_dim: int, hidden_dim: int = 32, 
                      embed_dim: int = 16, qk_dim: int= 16) -> Dict[str, Array]:
     """Initialize all model parameters in a single flat dictionary"""
-    key1, key2, key3, key4, key5, key6 = jax.random.split(key, 6)
+    key_gen = infinite_safe_keys_from_key(key)
     
     # Init parameters in a flat dictionary
     params = {}
     
     # Height network params
-    params['h_W1'] = jax.random.normal(key1, (1, hidden_dim)) * jnp.sqrt(2.0) * 5 
+    params['h_W1'] = jax.random.normal(next(key_gen).get(), (1, hidden_dim)) * jnp.sqrt(2.0) * 5 
     params['h_b1'] = jnp.zeros((hidden_dim,))
-    params['h_W2'] = jax.random.normal(key1, (hidden_dim, embed_dim)) * jnp.sqrt(2.0 / hidden_dim)
+    params['h_W2'] = jax.random.normal(next(key_gen).get(), (hidden_dim, embed_dim)) * jnp.sqrt(2.0 / hidden_dim)
     params['h_b2'] = jnp.zeros((embed_dim,))
     
     # Width network params
-    params['w_W1'] = jax.random.normal(key2, (1, hidden_dim)) * jnp.sqrt(2.0) * 5 
+    params['w_W1'] = jax.random.normal(next(key_gen).get(), (1, hidden_dim)) * jnp.sqrt(2.0) * 5 
     params['w_b1'] = jnp.zeros((hidden_dim,))
-    params['w_W2'] = jax.random.normal(key2, (hidden_dim, embed_dim)) * jnp.sqrt(2.0 / hidden_dim)
+    params['w_W2'] = jax.random.normal(next(key_gen).get(), (hidden_dim, embed_dim)) * jnp.sqrt(2.0 / hidden_dim)
     params['w_b2'] = jnp.zeros((embed_dim,))
     
+    params['pos_embedding'] = jax.random.normal(next(key_gen).get(), (28 * 28, embed_dim * 2)) * 0.01
+    # params['pos_embedding'] = jnp.ones((28 * 28, embed_dim * 2)) * 0.01
     # Image embeddings
-    params['img_map'] = jax.random.normal(key3, (img_dim, embed_dim * 2)) * jnp.sqrt(2.0 / img_dim)
-    params['img_embed'] = jax.random.normal(key3, (num_images, embed_dim * 2)) * 0.01
+    # params['img_map'] = jax.random.normal(next(key_gen).get(), (img_dim, embed_dim * 2)) * jnp.sqrt(2.0 / img_dim)
+    params['E_w1'] = jax.random.normal(next(key_gen).get(), (img_dim, hidden_dim)) * jnp.sqrt(2.0 / img_dim)
+    params['E_b1'] = jnp.zeros((hidden_dim,))
+    params['E_w2'] = jax.random.normal(next(key_gen).get(), (hidden_dim, embed_dim * 2)) * jnp.sqrt(2.0 / hidden_dim)
+    params['E_b2'] = jnp.zeros((embed_dim * 2,))
 
-    params['w_out'] = jax.random.normal(key5, (embed_dim * 2,)) * 0.01
+    params['img_embed'] = jax.random.normal(next(key_gen).get(), (num_images, embed_dim * 2)) * 0.01
+    # params['img_embed'] = jnp.ones((num_images, embed_dim * 2)) * 0.01
+
+    out_hidden_dim = 512
+    params['w_out'] = jax.random.normal(next(key_gen).get(), (embed_dim * 2,)) * 0.01
+    params['w_out_u'] = jax.random.normal(next(key_gen).get(), (embed_dim * 2, out_hidden_dim)) * 0.01
+    params['w_out_v'] = jax.random.normal(next(key_gen).get(), (out_hidden_dim, embed_dim * 2)) * 0.01
 
     params['b_out'] = jnp.zeros((1,))
-    # out_hidden_dim = 512
     # params['w_out1'] = jax.random.normal(key4, (embed_dim * 2, out_hidden_dim)) * jnp.sqrt(2.0 / (embed_dim * 2))
     # params['w_out2'] = jax.random.normal(key5, (out_hidden_dim, 1)) * jnp.sqrt(2.0 / out_hidden_dim)
 
     # params['w_out_c'] = jax.random.normal(key5, (embed_dim * 4,)) * jnp.sqrt(2.0 / (embed_dim * 4))
 
-    # params['w_out_c1'] = jax.random.normal(key4, (embed_dim * 4, out_hidden_dim)) * jnp.sqrt(2.0 / (embed_dim * 4))
-    # params['w_out_c2'] = jax.random.normal(key5, (out_hidden_dim, 1)) * jnp.sqrt(2.0 / out_hidden_dim)
+    params['w_out_c1'] = jax.random.normal(next(key_gen).get(), (embed_dim * 4, out_hidden_dim)) * jnp.sqrt(2.0 / (embed_dim * 4))
+    params['w_out_c2'] = jax.random.normal(next(key_gen).get(), (out_hidden_dim, 1)) * jnp.sqrt(2.0 / out_hidden_dim)
 
-    params['q1'] = jax.random.normal(key4, (qk_dim,)) * 0.01
-    params['q0'] = jax.random.normal(key5, (qk_dim,)) * 0.01
-    params['k'] = jax.random.normal(key4, (2, qk_dim)) * 0.01
-    params['v'] = jax.random.normal(key6, (2, qk_dim)) * 0.01
-    params['q_out'] = jax.random.normal(key6, (qk_dim,)) * 0.01
+    params['q'] = jax.random.normal(next(key_gen).get(), (2, qk_dim)) * 0.01
+    params['k'] = jax.random.normal(next(key_gen).get(), (2, qk_dim)) * 0.01
+    params['v'] = jax.random.normal(next(key_gen).get(), (2, qk_dim)) * 0.01
+    params['q_out'] = jax.random.normal(next(key_gen).get(), (qk_dim,)) * 0.01
     
     return params
 
@@ -84,7 +87,7 @@ def pos_network_forward(params: Tuple[Array, ...], coord: Array) -> Array:
 @jit
 def get_positional_embeddings(h_W1: Array, h_b1: Array, h_W2: Array, h_b2: Array,
                            w_W1: Array, w_b1: Array, w_W2: Array, w_b2: Array, 
-                           coords: Array, **_) -> Array:
+                           coords: Array, pos_embedding: Array, **_) -> Array:
     """Get embeddings for coordinates using positional networks"""
     # Extract coordinates
     y_coords, x_coords  = coords[:, 0:1], coords[:, 1:2]
@@ -92,26 +95,41 @@ def get_positional_embeddings(h_W1: Array, h_b1: Array, h_W2: Array, h_b2: Array
     y_embeddings = pos_network_forward((h_W1, h_b1, h_W2, h_b2), y_coords)
     x_embeddings = pos_network_forward((w_W1, w_b1, w_W2, w_b2), x_coords)
     
-    return jnp.concatenate([y_embeddings, x_embeddings], axis=1)
+    # return jnp.concatenate([y_embeddings, x_embeddings], axis=1) + pos_embedding
+    return pos_embedding
+
+def get_image_embedding(params: Dict[str, Array], target: Array, img_embed: Array) -> Array:
+    """Get the image embedding for a given target"""
+    # Compute the image embedding
+    # img_emb = target @ params['img_map'] 
+    # img_embedding = jax.nn.swish(target @ params['E_w1'] + params['E_b1']) @ params['E_w2'] + params['E_b2']
+    # return img_embedding
+    return img_embed
 
 def pix_val_forward(img_embed: Array, pos_embedding: Array, p: Dict[str, Array]) -> Array:
     """Compute pixel values using the image embedding and positional embeddings"""
     # Compute pixel values
-    # pixel_values = jax.nn.swish((pos_embeddings + img_embed) @ p['w_out1']) @ p['w_out2'] + p['b_out']
-    pixel_values = jnp.dot(pos_embedding, img_embed) 
-    # pixel_values = jnp.dot(pos_embeddings, img_embed * p['w_out']) + p['b_out']
+    # pixel_values = jax.nn.swish((pos_embedding + img_embed) @ p['w_out1']) @ p['w_out2'] + p['b_out']
+    # pixel_values = jnp.dot(pos_embedding, img_embed) 
+    # spilit both in half, dot and add
+    # pos_embedding_1, pos_embedding_2 = jnp.split(pos_embedding, 2)
+    # img_embed_1, img_embed_2 = jnp.split(img_embed, 2)
+    # pixel_values_1 = jnp.dot(pos_embedding_1, img_embed_1)
+    # pixel_values_2 = jnp.dot(pos_embedding_2, img_embed_2)
+    # return jax.nn.sigmoid(jnp.mean(pixel_values_1)) + jax.nn.sigmoid(jnp.mean(pixel_values_2))
+    pixel_values = jnp.dot(pos_embedding, img_embed) #+ p['b_out']
     # pixel_values = jnp.concatenate([img_embed, pos_embedding], axis=0) @ p['w_out_c'] + p['b_out']
     # pixel_values = jax.nn.swish(jnp.concat([img_embed, pos_embedding], axis=0) @ p['w_out_c1']) @ p['w_out_c2'] + p['b_out']
     # pixel_values = jax.nn.sigmoid(pixel_values)
+    # k = v = jnp.stack([img_embed, pos_embedding], axis=0).T.reshape(-1, 1, 2)
     # b = jnp.stack([img_embed, pos_embedding], axis=0).T.reshape(-1, 1, 2)
     # k = b @ p['k']
     # v = b @ p['v']
-    # v1 = jax.nn.dot_product_attention(p['q1'].reshape(1, 1, -1), k, v) 
-    # v2 = jax.nn.dot_product_attention(p['q0'].reshape(1, 1, -1), k, v)
-    # pixel_values = jnp.concatenate([v1, v2], axis=0).reshape(2, -1) @ p['q_out']
+    # att = jax.nn.dot_product_attention(p['q'].reshape(2, 1, -1), k, v) 
+    # pixel_values = att.reshape(2, -1) @ p['q_out']
     # pixel_values = jax.nn.softmax(pixel_values)[1]
     # return pixel_values
-    return jax.nn.sigmoid(pixel_values)
+    return jax.nn.sigmoid(jnp.mean(pixel_values) + p['b_out'])
 
 
 def predict_image(params: Dict[str, Array], img_idx: int, coords: Array) -> Array:
@@ -142,7 +160,7 @@ def train_step(optimizer: optax.GradientTransformation, coords: Array, params: D
 
         # Compute loss for each image in the batch
         def loss_1(img_emb, target):
-            # img_emb += target @ params['img_map'] 
+            img_emb = get_image_embedding(p, target, img_emb)
             pos_embs = get_positional_embeddings(**p, coords=coords)
             return jax.vmap(loss_pixel, in_axes=(None, 0, 0))(img_emb, pos_embs, target)
         return jnp.mean(jax.vmap(loss_1, in_axes=(0, 0))(batch_img_emb, batch_images))
@@ -205,8 +223,9 @@ def train_model(key: Array, coords: Array, flattened_images: Array,
             log_epoch_metrics(epoch, avg_loss, n_data, int(time.perf_counter() - start))
             def new_predict_image(_, img_idx, __):
                 pos_embeddings = get_positional_embeddings(**params, coords=coords)
-                t_embed = params['img_embed'][img_idx] #+ flattened_images[img_idx] @ params['img_map'] 
-                pixel_values = jax.vmap(pix_val_forward, in_axes=(None, 0, None))(t_embed, pos_embeddings, params)
+                target = flattened_images[img_idx]
+                img_emb = get_image_embedding(params, target, params['img_embed'][img_idx])
+                pixel_values = jax.vmap(pix_val_forward, in_axes=(None, 0, None))(img_emb, pos_embeddings, params)
                 return pixel_values
 
             
@@ -220,7 +239,7 @@ def train_model(key: Array, coords: Array, flattened_images: Array,
                     width=width, 
                     pos_network_forward=pos_network_forward,
                     predict_image=jit(new_predict_image),
-                    img_embed=params['img_embed'], 
+                    img_embed=jit(get_image_embedding)(params, flattened_images, params['img_embed']), 
                     data=data, 
                     num_train_images=num_images
                 )

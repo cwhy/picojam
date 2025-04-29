@@ -3,14 +3,14 @@ from __future__ import annotations
 from typing import Tuple, Literal, Iterator
 
 import jax
-from jax.random import PRNGKeyArray
+from jax import Array
 
 
 
 class SafeKey:
     """Safety wrapper for PRNG keys."""
 
-    def __init__(self, key: PRNGKeyArray):
+    def __init__(self, key: Array):
         self._key = key
         self._used = False
 
@@ -18,7 +18,7 @@ class SafeKey:
         if self._used:
             raise RuntimeError('Random key has been used previously.')
 
-    def get(self) -> PRNGKeyArray:
+    def get(self) -> Array:
         self._assert_not_used()
         self._used = True
         return self._key
@@ -36,7 +36,12 @@ class SafeKey:
 
 
 def infinite_safe_keys(seed: int) -> Iterator[SafeKey]:
-    init_key = jax.random.PRNGKey(seed)
+    init_key = jax.random.key(seed)
+    while True:
+        init_key, key = jax.random.split(init_key)
+        yield SafeKey(key)
+
+def infinite_safe_keys_from_key(init_key: Array) -> Iterator[SafeKey]:
     while True:
         init_key, key = jax.random.split(init_key)
         yield SafeKey(key)
