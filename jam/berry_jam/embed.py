@@ -1,4 +1,5 @@
 from doctest import debug
+from functools import partial
 import jax
 import os, sys
 import optax
@@ -85,6 +86,7 @@ if __name__ == "__main__":
         optimizer = optax.contrib.muon(config["learning_rate"])
     else:
         optimizer = optax.sgd(config["learning_rate"])
+    
     
 
     # Train the model - our refactored version handles parameter initialization internally
