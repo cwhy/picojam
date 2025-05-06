@@ -23,6 +23,7 @@ from berries.my_datasets import ImageClassification, load_supervised_image
 logging.basicConfig(level=logging.INFO)
 
 img_dims = (28, 28)  # X dimensions
+y_dims = (10,)  # Y dimensions
 
 def init() -> Tuple[Dict[str, Any], Dict[str, Array]]:
     """Initialize all model parameters in a single flat dictionary"""
@@ -47,6 +48,7 @@ def init() -> Tuple[Dict[str, Any], Dict[str, Array]]:
     params = {
         'pos_embedding': jax.random.normal(next(key_gen).get(), (*img_dims, embed_dim)) * 0.01,
         'img_embed': jax.random.normal(next(key_gen).get(), (num_images, embed_dim)) * 0.01,
+        'y_embed': jax.random.normal(next(key_gen).get(), (*y_dims, embed_dim)) * 0.01,
         'bias': jnp.zeros(1, dtype=jnp.float32),
     }
     return config, params, key_gen
@@ -77,22 +79,26 @@ def get_image(params: Dict[str, Array], img_idx: int) -> Array:
     pixel_values = jax.vmap(get_pixel_values_1, in_axes=(None, 0, None))(params, coords, img_idx)
     return pixel_values.reshape(img_dims)
 
-def loss_batch_1(params: Dict[str, Array], img_idx: int, target_img: Array) -> Array:
+def loss_batch_1(params: Dict[str, Array], img_idx: int, target_img: Array, target_y: int) -> Array:
     """Compute the loss for one image"""
-    return jnp.mean((get_image(params, img_idx) - target_img) ** 2)
+    rec_loss = jnp.mean((get_image(params, img_idx) - target_img) ** 2)
+    y_embed = params['y_embed'][target_y]
+    y_loss = jax.nn.softplus(-jnp.dot(get_image_embeddings(params, img_idx), y_embed))
+    return rec_loss + y_loss
 
-def loss_batch(params: Dict[str, Array], img_idx_batch: Array, target_batch: Array) -> Array:
+def loss_batch(params: Dict[str, Array], img_idx_batch: Array, target_batch: Array, target_y_batch: Array) -> Array:
     """Compute the loss for a batch of images and coordinates"""
     # Compute the loss for each image in the batch
-    loss_fn = jax.vmap(loss_batch_1, in_axes=(None, 0, 0))
-    return loss_fn(params, img_idx_batch, target_batch)  # type: ignore
+    loss_fn = jax.vmap(loss_batch_1, in_axes=(None, 0, 0, 0))
+    return loss_fn(params, img_idx_batch, target_batch, target_y_batch)  # type: ignore
+
 
 
 @partial(jax.jit, static_argnums=(0, ))
-def train_step(optimizer: optax.GradientTransformation, params: Dict[str, Array], opt_state: Any, indices: Array, batch_images: Array) -> Tuple[optax.Params, optax.OptState, Array]:
+def train_step(optimizer: optax.GradientTransformation, params: Dict[str, Array], opt_state: Any, indices: Array, batch_images: Array, batch_y: Array) -> Tuple[optax.Params, optax.OptState, Array]:
 
     def _loss_batch(p):
-        return jnp.mean(loss_batch(p, indices, batch_images))
+        return jnp.mean(loss_batch(p, indices, batch_images, batch_y))
 
     loss_value, grads = jax.value_and_grad(_loss_batch)(params)
     updates, new_opt_state = optimizer.update(grads, opt_state, params)
@@ -103,9 +109,9 @@ def test_train_step_100(params: Dict[str, Array], optimizer: optax.GradientTrans
     opt_state_ = optimizer.init(params)
     indices = jnp.array([0, 1, 2])
     batch_images = X[indices]
-
+    batch_y = jnp.array([0, 1, 2])
     for epoch in range(1000):
-        params, opt_state_, loss_value = train_step(optimizer, params, opt_state_, indices, batch_images)
+        params, opt_state_, loss_value = train_step(optimizer, params, opt_state_, indices, batch_images, batch_y)
         if epoch % 200 == 0:
             logging.info(f"Epoch {epoch}, Loss: {loss_value:.6f}")
 
@@ -126,7 +132,7 @@ if __name__ == "__main__":
     #plot_image(img_0, title="Debug Image", save_path="./tmp0.jpg")
 
     # Debug batch loss
-    loss = loss_batch(params_, jnp.array([0, 1, 2]), jnp.tile(img_0, (3, 1, 1)))
+    loss = loss_batch(params_, jnp.array([0, 1, 2]), jnp.tile(img_0, (3, 1, 1)), jnp.array([0, 1, 2]))
     logging.info(f"Batch Loss: {loss}")
 
     # Load dataset
@@ -134,6 +140,7 @@ if __name__ == "__main__":
     data: ImageClassification = load_supervised_image(config["dataset_name"])
     # Flatten images and normalize pixel values to [0, 1]
     data_X = data.X.reshape(data.n_samples, *img_dims) / 255.0
+    data_test_X = data.X_test.reshape(data.n_samples_test, *img_dims) / 255.0
 
     optimizer = get_optimizer(config)
 
@@ -160,6 +167,7 @@ if __name__ == "__main__":
 
     for epoch in range(config["num_epochs"]):
         epoch_loss_ = 0.0
+        epoch_y_loss_ = 0.0
         key = next(key_gen).get()
         permutation = jax.random.permutation(key, num_images)
         shuffled_images = data_X[permutation]
@@ -169,8 +177,10 @@ if __name__ == "__main__":
             _start = batch * config["batch_size"]
             _end = _start + config["batch_size"]
             _indices = shuffled_indices[_start:_end]
-            params_, opt_state_, _loss_value = train_step(optimizer, params_, opt_state_, _indices, shuffled_images[_start:_end])
+            _batch_y = data.y[_indices]
+            params_, opt_state_, _loss_value = train_step(optimizer, params_, opt_state_, _indices, shuffled_images[_start:_end], _batch_y)
             epoch_loss_ += _loss_value
+            epoch_y_loss_ += _batch_y
 
         _avg_loss = epoch_loss_ / num_batches
         loss_history_.append(_avg_loss)
@@ -182,7 +192,8 @@ if __name__ == "__main__":
                 "loss": _avg_loss,
                 "epoch": epoch,
                 "time": time.perf_counter() - start_time,
-                "n_data": n_data_
+                "n_data": n_data_,
+                "y_loss": epoch_y_loss_ / num_batches
             })
 
         if epoch % 50 == 0:
