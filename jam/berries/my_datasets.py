@@ -14,6 +14,7 @@ class Supervised1D(NamedTuple):
 
 class ImageClassification(NamedTuple):
     n_samples: int
+    n_test_samples: int
     d_x: tuple[int, int]
     d_y: int
     n_channels: int
@@ -70,7 +71,7 @@ def load_supervised_image(data: str) -> ImageClassification:
         n_channels = 1
         d_x = (28, 28)
         d_y = len(set(y.tolist()))
-        return ImageClassification(n_samples, d_x, d_y, n_channels, X_train, y, X_test, y_test)
+        return ImageClassification(n_samples, n_test_samples, d_x, d_y, n_channels, X_train, y, X_test, y_test)
     elif data == "fashion_mnist":
         fashion_mnist = load_dataset("fashion_mnist", cache_dir=cache_dir).with_format("jax")
         fashion_mnistData = fashion_mnist['train']
@@ -85,7 +86,7 @@ def load_supervised_image(data: str) -> ImageClassification:
         n_channels = 1
         d_x = (28, 28)
         d_y = len(set(y.tolist()))
-        return ImageClassification(n_samples, d_x, d_y, n_channels, X_train, y, X_test, y_test)
+        return ImageClassification(n_samples, n_test_samples, d_x, d_y, n_channels, X_train, y, X_test, y_test)
     elif data == "cifar10":
         cifar10 = load_dataset("uoft-cs/cifar10", cache_dir=cache_dir).with_format("jax")
         cifar10Data = cifar10['train']
@@ -100,5 +101,5 @@ def load_supervised_image(data: str) -> ImageClassification:
         n_channels = 3
         d_x = (32, 32)
         d_y = len(set(y.tolist()))
-        return ImageClassification(n_samples, d_x, d_y, n_channels, X_train, y, X_test, y_test)
+        return ImageClassification(n_samples, n_test_samples, d_x, d_y, n_channels, X_train, y, X_test, y_test)
     

@@ -39,6 +39,7 @@ def init() -> Tuple[Dict[str, Any], Dict[str, Array]]:
         "vis_frequency": 200,  # Visualize every 200 epochs
         "optimizer": "adamw",  # Added optimizer parameter
         "img_dims": img_dims,  # Image dimensions
+        "remarks": "Mixed Sampling"
     }
     key = jax.random.PRNGKey(config["random_seed"])
     embed_dim = config["embed_dim"]
@@ -79,18 +80,15 @@ def get_image(params: Dict[str, Array], img_idx: int) -> Array:
     pixel_values = jax.vmap(get_pixel_values_1, in_axes=(None, 0, None))(params, coords, img_idx)
     return pixel_values.reshape(img_dims)
 
-def loss_batch_1(params: Dict[str, Array], img_idx: int, target_img: Array, target_y: int) -> Array:
-    """Compute the loss for one image"""
-    rec_loss = jnp.mean((get_image(params, img_idx) - target_img) ** 2)
-    y_embed = params['y_embed'][target_y]
-    y_loss = jax.nn.softplus(-jnp.dot(get_image_embeddings(params, img_idx), y_embed))
-    return rec_loss + y_loss
+def loss_pixel(params: Dict[str, Array], img_idx: int, coords: Iterable[int], target: float) -> Array:
+    """Compute the loss for one pixel"""
+    return (get_pixel_values_1(params, coords, img_idx) - target) ** 2
 
-def loss_batch(params: Dict[str, Array], img_idx_batch: Array, target_batch: Array, target_y_batch: Array) -> Array:
+def loss_batch(params: Dict[str, Array], img_idx_batch: Array, coords_batch: Array, targets_batch: Array) -> Array:
     """Compute the loss for a batch of images and coordinates"""
     # Compute the loss for each image in the batch
-    loss_fn = jax.vmap(loss_batch_1, in_axes=(None, 0, 0, 0))
-    return loss_fn(params, img_idx_batch, target_batch, target_y_batch)  # type: ignore
+    loss_fn = jax.vmap(loss_pixel, in_axes=(None, 0, 0, 0))
+    return loss_fn(params, img_idx_batch, coords_batch, targets_batch)  # type: ignore
 
 
 
@@ -140,7 +138,7 @@ if __name__ == "__main__":
     data: ImageClassification = load_supervised_image(config["dataset_name"])
     # Flatten images and normalize pixel values to [0, 1]
     data_X = data.X.reshape(data.n_samples, *img_dims) / 255.0
-    data_test_X = data.X_test.reshape(data.n_test_samples, *img_dims) / 255.0
+    data_test_X = data.X_test.reshape(data.n_samples_test, *img_dims) / 255.0
 
     optimizer = get_optimizer(config)
 

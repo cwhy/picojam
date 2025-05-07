@@ -160,46 +160,46 @@ if __name__ == "__main__":
     start_time = time.perf_counter()
     n_data_ = 0
     loss_history_ = []
-    num_batches = num_images // config["batch_size"]
+    batch_size = config["batch_size"]
     all_indices = jnp.arange(num_images)
 
     img_vis_indices = jax.random.choice(next(key_gen).get(), all_indices, shape=(6,), replace=False)
 
-    for epoch in range(config["num_epochs"]):
-        epoch_loss_ = 0.0
-        epoch_y_loss_ = 0.0
+    # Calculate total number of batches needed to process num_train_images
+    total_batches = config["num_epochs"] * (num_images // batch_size)
+    epoch = 0
+
+    for batch_idx in range(total_batches):
+        # Sample random batch indices
         key = next(key_gen).get()
-        permutation = jax.random.permutation(key, num_images)
-        shuffled_images = data_X[permutation]
-        shuffled_indices = all_indices[permutation]
+        batch_indices = jax.random.choice(key, all_indices, shape=(batch_size,), replace=False)
+        batch_images = data_X[batch_indices]
+        batch_y = data.y[batch_indices]
 
-        for batch in range(num_batches):
-            _start = batch * config["batch_size"]
-            _end = _start + config["batch_size"]
-            _indices = shuffled_indices[_start:_end]
-            _batch_y = data.y[_indices]
-            params_, opt_state_, _loss_value = train_step(optimizer, params_, opt_state_, _indices, shuffled_images[_start:_end], _batch_y)
-            epoch_loss_ += _loss_value
-            epoch_y_loss_ += _batch_y
+        # Update parameters
+        params_, opt_state_, loss_value = train_step(optimizer, params_, opt_state_, batch_indices, batch_images, batch_y)
+        
+        # Update metrics
+        n_data_ += batch_size
+        loss_history_.append(loss_value)
 
-        _avg_loss = epoch_loss_ / num_batches
-        loss_history_.append(_avg_loss)
-
-        n_data_ += num_images
+        # Approximate epoch based on n_data
+        current_epoch = n_data_ // num_images
 
         if use_wandb:
             wandb.log({
-                "loss": _avg_loss,
-                "epoch": epoch,
+                "loss": loss_value,
+                "epoch": current_epoch,
                 "time": time.perf_counter() - start_time,
                 "n_data": n_data_,
-                "y_loss": epoch_y_loss_ / num_batches
+                "y_loss": jnp.mean(batch_y)
             })
 
-        if epoch % 50 == 0:
-            logging.info(f"Epoch {epoch}, Loss: {_avg_loss:.6f}")
+        if current_epoch > epoch:
+            epoch = current_epoch
+            logging.info(f"Epoch {epoch}, Loss: {loss_value:.6f}")
 
-        if use_wandb and (epoch % config["vis_frequency"] == 0 or epoch == config["num_epochs"] - 1):
+        if use_wandb and (epoch % config["vis_frequency"] == 0 or batch_idx == total_batches - 1):
             images = []
 
             for img_idx in img_vis_indices:
