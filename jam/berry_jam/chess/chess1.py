@@ -5,14 +5,18 @@ import jax.numpy as jnp
 import optax
 import wandb
 import logging
+import matplotlib.pyplot as plt
+import numpy as np
 from typing import Dict, Any, Tuple
 from functools import partial
+
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from berries.random_utils import infinite_safe_keys_from_key
 from optimizer_bank import get_optimizer
 
+from regress_vis_utils import create_scatter_plot
 # Import chess-specific utilities
 from chess_utils import (
     load_data_from_hf, 
@@ -34,7 +38,7 @@ def init() -> Tuple[Dict[str, Any], Dict[str, Any], Any]:
     
     config = {
         "dataset_name": "stockfish-evaluations",
-        "num_epochs": 500,
+        "num_epochs": 1000,
         "hidden_sizes": hidden_sizes,
         "batch_size": 1024,
         "learning_rate": 0.001,
@@ -43,9 +47,6 @@ def init() -> Tuple[Dict[str, Any], Dict[str, Any], Any]:
         "vis_frequency": 10,  # Log every 10 epochs
         "optimizer": "adam",
         "train_split": 0.8,
-        "weight_decay": 0.0,
-        "dropout_rate": 0.0,
-        "l2_regularization": 0.000,
     }
     
     key = jax.random.PRNGKey(config["random_seed"])
@@ -67,7 +68,7 @@ def init() -> Tuple[Dict[str, Any], Dict[str, Any], Any]:
     return config, params, key_gen
 
 
-def forward(params, x, dropout_key=None, training=False):
+def forward(params, x):
     """Forward pass through the network"""
     activations = x
     
@@ -75,33 +76,23 @@ def forward(params, x, dropout_key=None, training=False):
     for i in range(n_layers):
         activations = jnp.dot(activations, params[f'W{i}']) + params[f'b{i}']
         activations = jax.nn.relu(activations)
-        
-        # Apply dropout during training
-        if training and dropout_key is not None:
-            dropout_key, subkey = jax.random.split(dropout_key)
-            dropout_mask = jax.random.bernoulli(subkey, 0.9, activations.shape)  # Keep 90%
-            activations = activations * dropout_mask / 0.9
     
     # Output layer (no activation for regression)
     output = jnp.dot(activations, params[f'W{n_layers}']) + params[f'b{n_layers}']
     return output.squeeze()
 
-def loss_fn(params, batch_x, batch_y, l2_reg=0.0, dropout_key=None, training=False):
-    """Mean squared error loss with L2 regularization"""
-    predictions = jax.vmap(lambda x: forward(params, x, dropout_key, training))(batch_x)
+def loss_fn(params, batch_x, batch_y):
+    """Mean squared error loss"""
+    predictions = jax.vmap(lambda x: forward(params, x))(batch_x)
     mse_loss = jnp.mean((predictions - batch_y) ** 2)
-    
-    # L2 regularization (always applied, can be 0)
-    l2_penalty = sum(jnp.sum(params[f'W{i}'] ** 2) for i in range(n_layers + 1))
-    return mse_loss + l2_reg * l2_penalty
+    return mse_loss
 
-@partial(jax.jit, static_argnums=(0 ))
+@partial(jax.jit, static_argnums=(0,))
 def train_step(optimizer: optax.GradientTransformation, params: Dict[str, Any], opt_state: Any, 
-               batch_x: jnp.ndarray, batch_y: jnp.ndarray, 
-               l2_reg: float, dropout_key: jax.random.PRNGKey) -> Tuple[Dict[str, Any], Any, float]:
+               batch_x: jnp.ndarray, batch_y: jnp.ndarray) -> Tuple[Dict[str, Any], Any, float]:
     """Single training step"""
     def _loss_fn(p):
-        return loss_fn(p, batch_x, batch_y, l2_reg, dropout_key, training=True)
+        return loss_fn(p, batch_x, batch_y)
     
     loss_value, grads = jax.value_and_grad(_loss_fn)(params)
     updates, new_opt_state = optimizer.update(grads, opt_state)
@@ -110,7 +101,7 @@ def train_step(optimizer: optax.GradientTransformation, params: Dict[str, Any], 
 
 def evaluate_model(params, X_val, y_val):
     """Evaluate model on validation set"""
-    predictions = jax.vmap(lambda x: forward(params, x, training=False))(X_val)
+    predictions = jax.vmap(lambda x: forward(params, x))(X_val)
 
     mse = jnp.mean((predictions - y_val) ** 2)
     mae = jnp.mean(jnp.abs(predictions - y_val))
@@ -124,10 +115,9 @@ def evaluate_model(params, X_val, y_val):
         'mse': float(mse),
         'mae': float(mae),
         'rmse': float(jnp.sqrt(mse)),
-        'r2_score': float(r2_score)
+        'r2_score': float(r2_score),
+        'predictions': predictions
     }
-
-
 
 def test_train_step(params, optimizer, config, key_gen, num_steps=5):
     """Test training step with dummy data"""
@@ -145,10 +135,8 @@ def test_train_step(params, optimizer, config, key_gen, num_steps=5):
     test_opt_state = opt_state
     
     for step in range(num_steps):
-        dropout_key = next(key_gen).get()
         test_params, test_opt_state, test_loss = train_step(
-            optimizer, test_params, test_opt_state, dummy_X, dummy_y, 
-            config["l2_regularization"], dropout_key
+            optimizer, test_params, test_opt_state, dummy_X, dummy_y
         )
         if step % 2 == 0:
             logging.info(f"Test step {step}, Loss: {test_loss:.6f}")
@@ -156,15 +144,11 @@ def test_train_step(params, optimizer, config, key_gen, num_steps=5):
     logging.info("Training step test completed successfully!")
     return test_params
 
-
-
 def evaluate_position(params, fen: str):
     """Evaluate a single chess position"""
     encoded_fen = encode_fen_fast(fen)
-    prediction = forward(params, encoded_fen, hidden_sizes, training=False)
+    prediction = forward(params, encoded_fen)
     return float(prediction)
-
-
 
 # Example usage
 if __name__ == "__main__":
@@ -207,8 +191,6 @@ if __name__ == "__main__":
         
         start_time = time.perf_counter()
         best_val_loss = float('inf')
-        patience_counter = 0
-        patience_limit = 20
         
         # Get sample positions for tracking
         sample_positions = get_sample_positions()
@@ -229,12 +211,8 @@ if __name__ == "__main__":
                 batch_x = X_train_shuffled[i:i+config["batch_size"]]
                 batch_y = y_train_shuffled[i:i+config["batch_size"]]
                 
-                # Get dropout key
-                dropout_key = next(key_gen).get()
-                
                 params, opt_state, loss = train_step(
-                    optimizer, params, opt_state, batch_x, batch_y, 
-                    config["l2_regularization"], dropout_key
+                    optimizer, params, opt_state, batch_x, batch_y
                 )
                 
                 epoch_loss += loss
@@ -246,12 +224,9 @@ if __name__ == "__main__":
             val_metrics = evaluate_model(params, X_val, y_val)
             val_loss = val_metrics['mse']
             
-            # Early stopping
+            # Track best validation loss
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                patience_counter = 0
-            else:
-                patience_counter += 1
             
             # Logging
             if epoch % config["vis_frequency"] == 0:
@@ -269,8 +244,31 @@ if __name__ == "__main__":
                     "val_r2_score": val_metrics['r2_score'],
                     "best_val_loss": best_val_loss,
                     "time": time.perf_counter() - start_time,
-                    "patience_counter": patience_counter,
                 }
+                
+                # Create scatter plots periodically
+                if epoch % (config["vis_frequency"] * 5) == 0:
+                    # Sample training data for visualization
+                    sample_size = min(1000, len(X_train))
+                    sample_idx = jax.random.choice(next(key_gen).get(), len(X_train), (sample_size,), replace=False)
+                    X_train_sample = X_train[sample_idx]
+                    y_train_sample = y_train[sample_idx]
+                    
+                    # Get predictions for sampled training data
+                    train_predictions = jax.vmap(lambda x: forward(params, x))(X_train_sample)
+                    
+                    # Create scatter plots
+                    train_fig = create_scatter_plot(y_train_sample, train_predictions, 
+                                                  f"Training Set - Epoch {epoch}")
+                    val_fig = create_scatter_plot(y_val, val_metrics['predictions'], 
+                                                f"Validation Set - Epoch {epoch}")
+                    
+                    # Log to WandB
+                    log_dict["train_scatter_plot"] = wandb.Image(train_fig)
+                    log_dict["val_scatter_plot"] = wandb.Image(val_fig)
+                    
+                    plt.close(train_fig)
+                    plt.close(val_fig)
                 
                 # Log sample evaluations periodically
                 if epoch % (config["vis_frequency"] * 2) == 0:
@@ -290,11 +288,6 @@ if __name__ == "__main__":
                     log_dict.update(sample_evals)
                 
                 wandb.log(log_dict)
-            
-            # Early stopping check
-            if patience_counter >= patience_limit:
-                logging.info(f"Early stopping at epoch {epoch} (patience exceeded)")
-                break
         
         if use_wandb:
             # Log final model summary
@@ -302,7 +295,7 @@ if __name__ == "__main__":
                 "final_train_loss": float(avg_train_loss),
                 "final_val_loss": float(best_val_loss),
                 "final_val_rmse": float(jnp.sqrt(best_val_loss)),
-                "total_epochs": epoch + 1,
+                "total_epochs": config["num_epochs"],
                 "total_training_time": time.perf_counter() - start_time,
             }
             wandb.log(final_summary)
@@ -316,7 +309,7 @@ if __name__ == "__main__":
         logging.info("\nFinal evaluations:")
         for name, fen in sample_positions:
             try:
-                evaluation = evaluate_position(params, fen, config["hidden_sizes"])
+                evaluation = evaluate_position(params, fen)
                 logging.info(f"{name}: {evaluation:.2f} pawns")
             except Exception as e:
                 logging.error(f"Failed to evaluate {name}: {e}")
@@ -324,4 +317,4 @@ if __name__ == "__main__":
     except Exception as e:
         logging.error(f"Error during training: {e}")
         logging.error("Make sure you have the required libraries installed:")
-        logging.error("pip install datasets wandb jax optax")
+        logging.error("pip install datasets wandb jax optax matplotlib")

@@ -10,28 +10,27 @@ import numpy as np
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from berries.my_datasets import ImageClassification, load_supervised_image
 
-# CNN configuration - similar parameter count to original MLP
+# CNN configuration with attention mechanism
 cnn_config = {
     'conv1_features': 32,
     'conv2_features': 64, 
     'conv3_features': 128,
-    'fc1_features': 128,
-    'fc2_features': 128,
-    'fc3_features': 128,
+    'n_modes': 16,        # Number of attention modes/keys
+    'hidden_dim': 1024,    # Hidden dimension for query/key projection
     'output_features': 1
 }
 
 # Initialize wandb
 wandb.init(
     entity="decode-transformer",
-    project="multi-mode-regression",
+    project="multi-mode-regression-attention",
     config={
         "learning_rate": 0.001,
         "cnn_config": cnn_config,
-        "n_steps": 15000,
+        "n_steps": 20000,
         "batch_size": 512,
         "n_samples": 10000,
-        "log_freq": 50,  # Log MSE every 50 steps instead of 500
+        "log_freq": 50,
         "img_size": (28, 28),
         "weight_decay": 0.0001
     }
@@ -64,10 +63,9 @@ def create_multimodal_targets(mnist_labels, mnist_images):
     
     return targets
 
-# Initialize CNN parameters
-def init_cnn(config, key):
-    """Initialize CNN parameters with proper Xavier/He initialization"""
-    keys = jax.random.split(key, 8)  # Need multiple keys for different layers
+def init_cnn_with_attention(config, key):
+    """Initialize CNN with attention mechanism parameters"""
+    keys = jax.random.split(key, 10)  # Need more keys for attention components
     
     # Conv layer 1: 1 -> 32 channels, 5x5 kernel
     conv1_w = jax.random.normal(keys[0], (5, 5, 1, config['conv1_features'])) * jnp.sqrt(2.0 / (5*5*1))
@@ -81,40 +79,57 @@ def init_cnn(config, key):
     conv3_w = jax.random.normal(keys[2], (3, 3, config['conv2_features'], config['conv3_features'])) * jnp.sqrt(2.0 / (3*3*config['conv2_features']))
     conv3_b = jnp.zeros(config['conv3_features'])
     
-    # After 3 conv+maxpool layers: 28 -> 14 -> 7 -> 3
-    # So flattened size is 3*3*128 = 1152
-    # Let's be more precise: floor((floor((floor(28/2))/2))/2) = floor((floor(14/2))/2) = floor(7/2) = 3
-    flatten_size = 3 * 3 * config['conv3_features']
+    # Calculate flattened size after conv layers
+    flatten_size = 3 * 3 * config['conv3_features']  # 1152
     
-    # Fully connected layer
-    fc1_w = jax.random.normal(keys[3], (flatten_size, config['fc1_features'])) * jnp.sqrt(2.0 / flatten_size)
-    fc1_b = jnp.zeros(config['fc1_features'])
-
-    fc2_w = jax.random.normal(keys[4], (config['fc1_features'], config['fc2_features'])) * jnp.sqrt(2.0 / config['fc1_features'])
-    fc2_b = jnp.zeros(config['fc2_features'])
-
-    fc3_w = jax.random.normal(keys[5], (config['fc2_features'], config['fc3_features'])) * jnp.sqrt(2.0 / config['fc2_features'])
-    fc3_b = jnp.zeros(config['fc3_features'])
+    # Attention mechanism components
+    # Query projection: features -> query vector
+    query_w = jax.random.normal(keys[4], (flatten_size, config['hidden_dim'])) * jnp.sqrt(2.0 / flatten_size)
     
-    # Output layer
-    out_w = jax.random.normal(keys[5], (config['fc3_features'], config['output_features'])) * jnp.sqrt(2.0 / config['fc3_features'])
-    out_b = jnp.zeros(config['output_features'])
+    # Key matrix: learnable keys for different modes
+    keys_matrix = jax.random.normal(keys[5], (config['n_modes'], config['hidden_dim'])) * jnp.sqrt(2.0 / config['hidden_dim'])
+    
+    # Value matrix: learnable values (the actual regression values for each mode)
+    # values_matrix = jax.random.normal(keys[6], (config['n_modes'], 1)) * 10 # Initialize with larger values for regression
+    values_matrix = jnp.linspace(-35.0, 35.0, config['n_modes']).reshape(-1, 1)
+    
+    # Optional: Add a small MLP after attention for fine-tuning
+    attention_mlp_w = jax.random.normal(keys[7], (1, config['output_features'])) * jnp.sqrt(2.0)
+    attention_mlp_b = jnp.zeros(config['output_features']) 
     
     return {
         'conv1': (conv1_w, conv1_b),
         'conv2': (conv2_w, conv2_b), 
         'conv3': (conv3_w, conv3_b),
-        'fc1': (fc1_w, fc1_b),
-        'fc2': (fc2_w, fc2_b),
-        'fc3': (fc3_w, fc3_b),
-        'output': (out_w, out_b)
+        'query_w': query_w,
+        'keys': keys_matrix,
+        'values': values_matrix,
+        'attention_mlp': (attention_mlp_w, attention_mlp_b)
     }
 
-# CNN forward pass
-def cnn_forward(params, x):
-    """Forward pass through CNN
-    x shape: (28, 28) - single channel image
+def attention_mechanism(query, keys, values):
     """
+    Compute attention weights and output
+    query: (hidden_dim,) - query vector from input features
+    keys: (n_modes, hidden_dim) - learnable key vectors
+    values: (n_modes, 1) - learnable value scalars for each mode
+    """
+    # Compute attention scores: query · keys^T
+    scores = jnp.dot(keys, query)  # (n_modes,)
+    
+    # Apply softmax to get attention weights
+    attention_weights = jax.nn.softmax(scores)  # (n_modes,)
+
+    # Normalize scores
+    # scores = scores / jnp.sqrt(cnn_config['hidden_dim'])
+    
+    # Weighted sum of values
+    output = jnp.dot(attention_weights, values.squeeze())  # scalar
+    
+    return output, attention_weights
+
+def cnn_forward_with_attention(params, x):
+    """Forward pass through CNN with attention mechanism"""
     # Add batch and channel dimensions: (28, 28) -> (1, 28, 28, 1)
     x = x.reshape(1, 28, 28, 1)
     
@@ -127,7 +142,6 @@ def cnn_forward(params, x):
         dimension_numbers=('NHWC', 'HWIO', 'NHWC')
     )
     x = jax.nn.relu(x + conv1_b.reshape(1, 1, 1, -1))
-    # MaxPool 2x2: (1, 28, 28, 32) -> (1, 14, 14, 32)
     x = jax.lax.reduce_window(
         x, -jnp.inf, jax.lax.max, 
         window_dimensions=(1, 2, 2, 1), 
@@ -144,7 +158,6 @@ def cnn_forward(params, x):
         dimension_numbers=('NHWC', 'HWIO', 'NHWC')
     )
     x = jax.nn.relu(x + conv2_b.reshape(1, 1, 1, -1))
-    # MaxPool 2x2: (1, 14, 14, 64) -> (1, 7, 7, 64)
     x = jax.lax.reduce_window(
         x, -jnp.inf, jax.lax.max, 
         window_dimensions=(1, 2, 2, 1), 
@@ -161,7 +174,6 @@ def cnn_forward(params, x):
         dimension_numbers=('NHWC', 'HWIO', 'NHWC')
     )
     x = jax.nn.relu(x + conv3_b.reshape(1, 1, 1, -1))
-    # MaxPool 2x2: (1, 7, 7, 128) -> (1, 3, 3, 128)
     x = jax.lax.reduce_window(
         x, -jnp.inf, jax.lax.max, 
         window_dimensions=(1, 2, 2, 1), 
@@ -169,42 +181,41 @@ def cnn_forward(params, x):
         padding='VALID'
     )
     
-    # Flatten: Remove batch dimension and flatten spatial+channel dims
-    x = x.reshape(-1)  # Flatten everything: (1, 3, 3, 128) -> (1152,)
+    # Flatten features
+    x = x.reshape(-1)  # (1152,)
     
-    # Fully connected layer + ReLU
-    fc1_w, fc1_b = params['fc1']
-    x = jax.nn.relu(x @ fc1_w + fc1_b)
-
-    fc2_w, fc2_b = params['fc2']
-    x = jax.nn.relu(x @ fc2_w + fc2_b)
-
-    fc3_w, fc3_b = params['fc3']
-    x = jax.nn.relu(x @ fc3_w + fc3_b)
+    # Project to feature dimension
+    query = jnp.tanh(x @ params['query_w'])   # (hidden_dim,)
     
-    # Output layer (no activation for regression)
-    out_w, out_b = params['output']
-    x = x @ out_w + out_b
+    # Apply attention mechanism
+    keys = params['keys']  # (n_modes, hidden_dim)
+    values = params['values']  # (n_modes, 1)
     
-    return x
+    attention_output, attention_weights = attention_mechanism(query, keys, values)
+    
+    # Optional: Pass through small MLP for final adjustment
+    attention_mlp_w, attention_mlp_b = params['attention_mlp']
+    final_output = attention_output * attention_mlp_w.squeeze() + attention_mlp_b.squeeze()
+    # final_output = attention_output
+    
+    return final_output
 
 # Loss function
 def loss_fn(params, x_batch, y_batch):
     """Compute MSE loss for batch"""
-    pred = vmap(lambda x: cnn_forward(params, x))(x_batch)
-    return jnp.mean((pred.squeeze() - y_batch) ** 2)
+    pred = vmap(lambda x: cnn_forward_with_attention(params, x))(x_batch)
+    return jnp.sqrt(jnp.mean((pred - y_batch) ** 2))
 
 # Load MNIST data
 print("Loading MNIST dataset...")
 data: ImageClassification = load_supervised_image("mnist")
-# Keep images in 2D format for CNN (don't flatten)
-mnist_images = data.X.reshape(data.n_samples, 28, 28) / 255.0  # Normalize to [0,1]
+mnist_images = data.X.reshape(data.n_samples, 28, 28) / 255.0
 mnist_labels = data.y
 
 # Split data into train/validation sets
 n_samples = wandb.config.n_samples
 total_indices = jnp.arange(min(n_samples, len(mnist_images)))
-n_train = int(0.8 * len(total_indices))  # 80% train, 20% val
+n_train = int(0.8 * len(total_indices))
 
 train_indices = total_indices[:n_train]
 val_indices = total_indices[n_train:]
@@ -212,7 +223,6 @@ val_indices = total_indices[n_train:]
 # Training data
 x_train = mnist_images[train_indices]
 train_labels = mnist_labels[train_indices]
-# Use the ORIGINAL data format for target creation (as in your original code)
 y_train = create_multimodal_targets(train_labels, data.X[train_indices].reshape(len(train_indices), 28, 28))
 
 # Validation data  
@@ -228,9 +238,9 @@ y_data = y_train
 labels = train_labels
 
 def evaluate_and_log(params, step, x_val, y_val, val_labels, suffix=""):
-    """Evaluate model on validation set and log scatter plot"""
+    """Evaluate model on validation set and log scatter plot + attention analysis"""
     # Get predictions on validation set
-    y_pred_val = vmap(lambda x: cnn_forward(params, x))(x_val).squeeze()
+    y_pred_val = vmap(lambda x: cnn_forward_with_attention(params, x))(x_val)
     val_mse = jnp.mean((y_pred_val - y_val) ** 2)
     
     # Create scatter plot data grouped by digit
@@ -248,6 +258,13 @@ def evaluate_and_log(params, step, x_val, y_val, val_labels, suffix=""):
         f"val_mse{suffix}": float(val_mse)
     })
     
+    # Log learned attention values/modes
+    learned_values = params['values'].squeeze()
+    wandb.log({
+        f"learned_mode_values{suffix}": wandb.Histogram(np.array(learned_values)),
+        f"mode_value_range{suffix}": float(jnp.max(learned_values) - jnp.min(learned_values))
+    })
+    
     return val_mse
 
 print(f"Train data shape: {x_data.shape}, Val data shape: {x_val.shape}")
@@ -257,14 +274,9 @@ print(f"Target range: [{jnp.min(y_data):.3f}, {jnp.max(y_data):.3f}]")
 # Log target distribution
 wandb.log({"target_histogram": wandb.Histogram(np.array(y_data))})
 
-# Define evaluation points (5 times throughout training)
-total_steps = wandb.config.n_steps
-eval_steps = [total_steps // 5 * i for i in range(1, 6)]  # At 20%, 40%, 60%, 80%, 100%
-print(f"Will evaluate at steps: {eval_steps}")
-
 # Initialize model
 key = jax.random.PRNGKey(42)
-params = init_cnn(cnn_config, key)
+params = init_cnn_with_attention(cnn_config, key)
 optimizer = optax.adamw(wandb.config.learning_rate, weight_decay=wandb.config.weight_decay)
 opt_state = optimizer.init(params)
 
@@ -279,6 +291,11 @@ def train_step(params, opt_state, x_batch, y_batch):
 # Create batches
 batch_size = wandb.config.batch_size
 n_batches = len(x_data) // batch_size
+
+# Define evaluation points
+total_steps = wandb.config.n_steps
+eval_steps = [total_steps // 5 * i for i in range(1, 6)]
+print(f"Will evaluate at steps: {eval_steps}")
 
 # Training loop
 print("Starting training...")
@@ -300,35 +317,39 @@ for step in range(wandb.config.n_steps):
     
     params, opt_state, loss = train_step(params, opt_state, x_batch, y_batch)
     
-    # Log training loss and validation MSE more frequently
+    # Log training loss
     wandb.log({"train_loss": float(loss), "step": step})
     
-    # Log MSE every log_freq steps (default 50)
+    # Log MSE every log_freq steps
     if step % wandb.config.log_freq == 0:
-        # Quick validation MSE calculation without scatter plot
-        y_pred_val_quick = vmap(lambda x: cnn_forward(params, x))(x_val).squeeze()
+        y_pred_val_quick = vmap(lambda x: cnn_forward_with_attention(params, x))(x_val)
         val_mse_quick = jnp.mean((y_pred_val_quick - y_val) ** 2)
         wandb.log({"val_mse": float(val_mse_quick), "step": step})
         print(f"Step {step}, Train Loss: {loss:.6f}, Val MSE: {val_mse_quick:.6f}")
         
-    # Evaluate at specific intervals with scatter plots (5 times throughout training)
+    # Evaluate at specific intervals with detailed analysis
     if step in eval_steps:
         print(f"Creating detailed evaluation at step {step}...")
         val_mse = evaluate_and_log(params, step, x_val, y_val, val_labels)
         print(f"Detailed validation MSE at step {step}: {val_mse:.6f}")
+        
+        # Log mode values for WandB to plot automatically
+        current_mode_values = params['values'].squeeze()
+        mode_dict = {f"mode_{i}": float(current_mode_values[i]) for i in range(len(current_mode_values))}
+        wandb.log({**mode_dict, "step": step})
 
-# Final evaluation on both training and validation sets
+# Final evaluation
 print("Final evaluation...")
 
-# Training set evaluation (subset to same size as validation)
-train_subset_size = len(x_val)  # Match validation set size
+# Training set evaluation (subset)
+train_subset_size = len(x_val)
 train_subset_indices = jnp.arange(train_subset_size)
 x_train_subset = x_data[train_subset_indices]
 y_train_subset = y_data[train_subset_indices] 
 labels_train_subset = labels[train_subset_indices]
 
 # Evaluate on training subset
-y_pred_train = vmap(lambda x: cnn_forward(params, x))(x_train_subset).squeeze()
+y_pred_train = vmap(lambda x: cnn_forward_with_attention(params, x))(x_train_subset)
 train_mse = jnp.mean((y_pred_train - y_train_subset) ** 2)
 
 train_scatter_data = []
@@ -345,9 +366,23 @@ wandb.log({
     "train_mse_final": float(train_mse)
 })
 
-# Validation set evaluation  
+# Final validation evaluation  
 final_val_mse = evaluate_and_log(params, wandb.config.n_steps, x_val, y_val, val_labels, suffix="_final")
+
+# Log final learned attention parameters
+final_values = params['values'].squeeze()
+final_keys = params['keys']
 
 print(f"Final Training MSE: {train_mse:.6f}")
 print(f"Final Validation MSE: {final_val_mse:.6f}")
+print(f"Learned mode values: {final_values}")
+print(f"Value range: [{jnp.min(final_values):.3f}, {jnp.max(final_values):.3f}]")
+
+
+# Log final attention analysis
+wandb.log({
+    "final_mode_values": [float(v) for v in final_values],
+    "final_key_norms": [float(jnp.linalg.norm(k)) for k in final_keys]
+})
+
 wandb.finish()
