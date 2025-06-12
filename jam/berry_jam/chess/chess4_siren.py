@@ -22,32 +22,43 @@ from chess_utils import (
     parse_evaluation
 )
 
-# Import our new embedding encoder and transformer utilities
-from jam.berry_jam.chess.chess_embedding_encoder_allembd import ChessEmbeddingEncoder
-from transformer_utils import (
-    init_full_transformer_params,
-    full_transformer_forward,
-    count_transformer_parameters
+# Import our new concatenation encoder
+from chess_concatenation_encoder import ChessConcatenationEncoder
+from transformer_utils_siren import (
+    init_full_transformer_params_concat,
+    full_transformer_forward_concat,
+    count_transformer_parameters_concat
 )
 
 logging.basicConfig(level=logging.INFO)
 
-# Model configuration
+# Model configuration for concatenation approach
 max_pieces = 32  # Always exactly 32 pieces (fixed length)
-vocab_size = 1561  # 1560 piece states + 1 for special use
+piece_components = 4  # [piece_type, position, color, will_move_next]
+
+# Component vocabulary sizes (position now uses SIREN network, but we keep the vocab for compatibility)
+piece_type_vocab = 7   # 6 piece types + 1 padding
+position_vocab = 66    # Not used (SIREN handles positions), but kept for function signatures
+color_vocab = 3        # 2 colors + 1 padding
+move_vocab = 3         # 2 move states + 1 padding
+
 d_model = 256  # Transformer hidden dimension
 n_heads = 8  # Number of attention heads
-n_layers = 2  # Number of transformer layers
+n_layers = 6  # Number of transformer layers
 output_size = 1
 
 def init() -> Tuple[Dict[str, Any], Dict[str, Any], Any]:
     """Initialize all model parameters and configuration"""
     
     config = {
-        "dataset_name": "stockfish-evaluations-transformer",
+        "dataset_name": "stockfish-evaluations-transformer-concat",
         "num_epochs": 100,
         "max_pieces": max_pieces,
-        "vocab_size": vocab_size,
+        "piece_components": piece_components,
+        "piece_type_vocab": piece_type_vocab,
+        "position_vocab": position_vocab,
+        "color_vocab": color_vocab,
+        "move_vocab": move_vocab,
         "d_model": d_model,
         "n_heads": n_heads,
         "n_layers": n_layers,
@@ -64,29 +75,42 @@ def init() -> Tuple[Dict[str, Any], Dict[str, Any], Any]:
     key = jax.random.PRNGKey(config["random_seed"])
     key_gen = infinite_safe_keys_from_key(key)
     
-    # Initialize transformer parameters
+    # Initialize transformer parameters for concatenation approach
     key, subkey = jax.random.split(key)
-    params = init_full_transformer_params(
-        subkey, vocab_size, d_model, n_heads, n_layers, max_pieces, output_size
+    params = init_full_transformer_params_concat(
+        subkey, 
+        piece_type_vocab, position_vocab, color_vocab, move_vocab,
+        d_model, n_heads, n_layers, max_pieces, output_size
     )
     
     # Count and log parameters
-    param_count = count_transformer_parameters(vocab_size, d_model, n_heads, n_layers, max_pieces, output_size)
-    logging.info(f"Transformer initialized with {param_count:,} parameters")
+    param_count = count_transformer_parameters_concat(
+        piece_type_vocab, position_vocab, color_vocab, move_vocab,
+        d_model, n_heads, n_layers, max_pieces, output_size
+    )
+    logging.info(f"Concatenation Transformer initialized with {param_count:,} parameters")
     
     return config, params, key_gen
 
 def forward(params, x):
-    """Forward pass through the transformer"""
-    return full_transformer_forward(params, x, n_layers, n_heads, max_pieces, pooling_method="mean")
+    """Forward pass through the transformer with concatenation encoding"""
+    return full_transformer_forward_concat(params, x, n_layers, n_heads, max_pieces, pooling_method="mean")
 
 def loss_fn(params, batch_x, batch_y):
     """Mean squared error loss"""
     predictions = jax.vmap(lambda x: forward(params, x))(batch_x)
     mse_loss = jnp.mean((predictions - batch_y) ** 2)
     
-    # Add L2 regularization to embeddings only
-    l2_reg = 0.0001 * jnp.sum(params['embeddings'] ** 2)
+    # Add L2 regularization to all embeddings and SIREN network
+    l2_reg = 0.0001 * (
+        jnp.sum(params['piece_type_embeddings'] ** 2) +
+        jnp.sum(params['color_embeddings'] ** 2) +
+        jnp.sum(params['move_embeddings'] ** 2) +
+        # SIREN network parameters
+        sum(jnp.sum(params['siren_position'][k] ** 2) 
+            for k in params['siren_position'].keys() 
+            if k.startswith('w') or k.startswith('b'))
+    )
     
     return mse_loss + l2_reg
 
@@ -97,7 +121,8 @@ def train_step(optimizer: optax.GradientTransformation, params: Dict[str, Any], 
     def _loss_fn(p):
         return loss_fn(p, batch_x, batch_y)
     
-    loss_value, grads = jax.value_and_grad(_loss_fn)(params)
+    # Use allow_int=True to handle integer inputs in embedding lookups
+    loss_value, grads = jax.value_and_grad(_loss_fn, allow_int=True)(params)
     
     # Apply gradient clipping
     grads = optax.clip_by_global_norm(1.0).update(grads, opt_state, params)[0]
@@ -126,8 +151,8 @@ def evaluate_model(params, X_val, y_val):
         'predictions': predictions
     }
 
-def load_embedding_data_from_hf(encoder: ChessEmbeddingEncoder, limit: int = 10000) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """Load and encode data using embedding approach"""
+def load_concatenation_data_from_hf(encoder: ChessConcatenationEncoder, limit: int = 10000) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """Load and encode data using concatenation approach"""
     from datasets import load_dataset
     from tqdm import tqdm
     
@@ -145,7 +170,7 @@ def load_embedding_data_from_hf(encoder: ChessEmbeddingEncoder, limit: int = 100
     evaluations = []
     skipped = 0
     
-    logging.info("Encoding positions with embedding approach...")
+    logging.info("Encoding positions with concatenation approach...")
     for example in tqdm(ds, desc="Encoding positions"):
         try:
             fen = example['fen']
@@ -157,7 +182,7 @@ def load_embedding_data_from_hf(encoder: ChessEmbeddingEncoder, limit: int = 100
                 skipped += 1
                 continue
                 
-            # Encode FEN using embedding approach
+            # Encode FEN using concatenation approach
             encoded_fen = encoder.encode_fen(fen, max_pieces=max_pieces)
             
             encoded_positions.append(encoded_fen)
@@ -167,10 +192,16 @@ def load_embedding_data_from_hf(encoder: ChessEmbeddingEncoder, limit: int = 100
             skipped += 1
             continue
     
-    X = jnp.array(encoded_positions)
+    # Convert to proper dtypes: int32 for categorical, float32 for positions
+    X_array = jnp.array(encoded_positions)
+    # Convert positions (column 1) to float32, keep others as int32
+    X = X_array.at[:, :, 1].set(X_array[:, :, 1].astype(jnp.float32))
+    X = X.at[:, :, [0, 2, 3]].set(X[:, :, [0, 2, 3]].astype(jnp.int32))
+    
     y = jnp.array(evaluations)
     
     logging.info(f"Successfully processed {len(X)} positions")
+    logging.info(f"Data shape: {X.shape} (should be (N, {max_pieces}, {piece_components}))")
     if skipped > 0:
         logging.info(f"Skipped {skipped} positions due to parsing errors")
     
@@ -180,8 +211,13 @@ def test_train_step(params, optimizer, config, key_gen, encoder, num_steps=5):
     """Test training step with dummy data"""
     logging.info("Testing training step with dummy data...")
     
-    # Create dummy embedding data
-    dummy_X = jax.random.randint(next(key_gen).get(), (10, max_pieces), 0, vocab_size)
+    # Create dummy concatenation data - shape (batch_size, max_pieces, 4)
+    key = next(key_gen).get()
+    dummy_X_raw = jax.random.randint(key, (10, max_pieces, piece_components), 0, 7)
+    # Convert to mixed types: int32 for categorical, float32 for positions
+    dummy_X = dummy_X_raw.astype(jnp.int32)
+    dummy_X = dummy_X.at[:, :, 1].set(dummy_X[:, :, 1].astype(jnp.float32))  # Positions as float
+    
     dummy_y = jax.random.normal(next(key_gen).get(), (10,))
     
     # Initialize optimizer state
@@ -223,8 +259,8 @@ def analyze_attention_patterns(params, encoder, sample_positions, layer_idx=0):
                 encoded_pos = encoder.encode_fen(fen, max_pieces=max_pieces)
                 
                 # Get piece information for interpretation
-                pieces = encoder.decode_embedding_ids(encoded_pos)
-                active_pieces = [(i, p) for i, p in enumerate(pieces) if p is not None]
+                pieces = encoder.decode_concatenated_encoding(encoded_pos)
+                active_pieces = [(i, p) for i, p in enumerate(pieces)]
                 
                 logging.info(f"{name}: Found {len(active_pieces)} pieces")
                 
@@ -232,10 +268,10 @@ def analyze_attention_patterns(params, encoder, sample_positions, layer_idx=0):
                 for i, (pos_idx, piece_info) in enumerate(active_pieces[:5]):
                     piece_type, position, color, will_move = piece_info
                     piece_names = {0: 'P', 1: 'N', 2: 'B', 3: 'R', 4: 'Q', 5: 'K'}
-                    piece_symbol = piece_names[piece_type]
-                    color_str = 'White' if color == 0 else 'Black'
-                    move_str = 'will move' if will_move else 'waiting'
-                    logging.info(f"  Pos {pos_idx}: {color_str} {piece_symbol} ({move_str})")
+                    piece_symbol = piece_names.get(piece_type, '?')
+                    color_str = 'White' if color == 0 else 'Black' if color == 1 else 'Unknown'
+                    move_str = 'will move' if will_move == 1 else 'waiting' if will_move == 0 else 'unknown'
+                    logging.info(f"  Piece {i}: {color_str} {piece_symbol} at pos {position} ({move_str})")
                     
             except Exception as e:
                 logging.warning(f"Failed to analyze {name}: {e}")
@@ -246,8 +282,8 @@ def analyze_attention_patterns(params, encoder, sample_positions, layer_idx=0):
 # Example usage
 if __name__ == "__main__":
     try:
-        # Initialize encoder
-        encoder = ChessEmbeddingEncoder()
+        # Initialize concatenation encoder
+        encoder = ChessConcatenationEncoder()
         
         # Initialize configuration and parameters
         config, params, key_gen = init()
@@ -262,9 +298,9 @@ if __name__ == "__main__":
         # Test training step with dummy data
         test_train_step(params, optimizer, config, key_gen, encoder)
         
-        # Load data using embedding encoding
+        # Load data using concatenation encoding
         logging.info("Loading and encoding real data...")
-        X, y = load_embedding_data_from_hf(encoder, config["data_limit"])
+        X, y = load_concatenation_data_from_hf(encoder, config["data_limit"])
         
         # Initialize optimizer state for real training
         opt_state = optimizer.init(params)
@@ -277,7 +313,7 @@ if __name__ == "__main__":
         logging.info(f"Training set: {len(X_train)} samples")
         logging.info(f"Validation set: {len(X_val)} samples")
         logging.info(f"Target range: [{float(jnp.min(y)):.2f}, {float(jnp.max(y)):.2f}]")
-        logging.info(f"Model: Transformer with {n_layers} layers, {n_heads} heads, {d_model} dim")
+        logging.info(f"Model: Concatenation Transformer with {n_layers} layers, {n_heads} heads, {d_model} dim")
         
         # Initialize WandB
         use_wandb = True
@@ -287,7 +323,7 @@ if __name__ == "__main__":
                 entity="decode-transformer", 
                 project="chess-position-evaluation", 
                 config=config,
-                tags=["transformer", "chess", "position-evaluation", "embedding", "attention"]
+                tags=["transformer", "chess", "position-evaluation", "concatenation", "attention"]
             )
         
         start_time = time.perf_counter()
@@ -400,7 +436,10 @@ if __name__ == "__main__":
                 "final_val_rmse": float(jnp.sqrt(best_val_loss)),
                 "total_epochs": config["num_epochs"],
                 "total_training_time": time.perf_counter() - start_time,
-                "model_parameters": count_transformer_parameters(vocab_size, d_model, n_heads, n_layers, max_pieces, output_size),
+                "model_parameters": count_transformer_parameters_concat(
+                    piece_type_vocab, position_vocab, color_vocab, move_vocab,
+                    d_model, n_heads, n_layers, max_pieces, output_size
+                ),
                 "d_model": d_model,
                 "n_heads": n_heads,
                 "n_layers": n_layers,
@@ -414,8 +453,6 @@ if __name__ == "__main__":
         logging.info("\n" + "="*50)
         logging.info("FINAL POSITION EVALUATIONS")
         logging.info("="*50)
-        
-        sample_positions = get_sample_positions()
         
         for name, fen in sample_positions:
             try:
@@ -453,15 +490,19 @@ if __name__ == "__main__":
         
         # Log final transformer statistics
         logging.info(f"\nFinal Model Statistics:")
-        logging.info(f"Total Parameters: {count_transformer_parameters(vocab_size, d_model, n_heads, n_layers, max_pieces, output_size):,}")
+        param_count = count_transformer_parameters_concat(
+            piece_type_vocab, position_vocab, color_vocab, move_vocab,
+            d_model, n_heads, n_layers, max_pieces, output_size
+        )
+        logging.info(f"Total Parameters: {param_count:,}")
         logging.info(f"Architecture: {n_layers} layers, {n_heads} heads, {d_model} dimensions")
-        logging.info(f"Activation: Dynamic Tanh (γ * tanh(α * x) + β)")
-        logging.info(f"Feed Forward: SwiGLU")
-        logging.info(f"Pooling: Mean pooling")
+        logging.info(f"Encoding: Concatenation approach with SIREN position encoding")
+        logging.info(f"Component Vocabs: Piece({piece_type_vocab}), Color({color_vocab}), Move({move_vocab}), Position(SIREN)")
+        logging.info(f"SIREN Network: 2D input -> 32 hidden -> {d_model//4} output (3 layers)")
         logging.info(f"Best Validation RMSE: {jnp.sqrt(best_val_loss):.4f}")
         
     except Exception as e:
         logging.error(f"Error during training: {e}")
         logging.error("Make sure you have the required libraries installed:")
         logging.error("pip install datasets wandb jax optax matplotlib")
-        logging.error("Also ensure chess_embedding_encoder.py and transformer_utils.py are in the same directory")
+        logging.error("Also ensure chess_concatenation_encoder.py and transformer_utils.py are in the same directory")
