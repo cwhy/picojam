@@ -49,3 +49,45 @@ def make_positional_color_map(img_dims: tuple[int, int]) -> jnp.ndarray:
 def make_positional_colormap_for_matplotlib(img_dims):
     arr = make_positional_color_map(img_dims)
     return ListedColormap(device_get(arr)) 
+
+
+
+@cache
+def make_sinusoidal_pos_embed(img_dims: tuple[int, int], d_model: int = 512) -> Array:
+    """
+    Creates sinusoidal positional embeddings similar to those in transformers.
+    Returns an array of shape (H*W, d_model) with positional encodings.
+    """
+    h, w = img_dims
+    coords = create_coordinate_indices(h, w)  # shape (H*W, 2)
+    
+    # Normalize coordinates to [0, 1]
+    ys = coords[:, 0] / jnp.maximum(h - 1, 1)
+    xs = coords[:, 1] / jnp.maximum(w - 1, 1)
+    
+    # Create position encodings
+    pos_embed = jnp.zeros((h * w, d_model))
+    
+    for i in range(0, d_model, 2):
+        # X coordinate encoding
+        pos_embed = pos_embed.at[:, i].set(jnp.sin(xs * (10000 ** (i / d_model))))
+        if i + 1 < d_model:
+            pos_embed = pos_embed.at[:, i + 1].set(jnp.cos(xs * (10000 ** (i / d_model))))
+    
+    # Y coordinate encoding (interleaved with X)
+    for i in range(0, d_model, 2):
+        pos_embed = pos_embed.at[:, i].set(pos_embed[:, i] + jnp.sin(ys * (10000 ** (i / d_model))))
+        if i + 1 < d_model:
+            pos_embed = pos_embed.at[:, i + 1].set(pos_embed[:, i + 1] + jnp.cos(ys * (10000 ** (i / d_model))))
+    
+    return pos_embed
+
+@cache
+def make_learnable_pos_embed(img_dims: tuple[int, int], d_model: int = 512) -> Array:
+    """
+    Creates learnable positional embeddings initialized with small random values.
+    Returns an array of shape (H*W, d_model) that can be used as trainable parameters.
+    """
+    h, w = img_dims
+    pos_embed = jnp.random.normal(0, 0.02, (h * w, d_model))
+    return pos_embed.astype(jnp.float32)
