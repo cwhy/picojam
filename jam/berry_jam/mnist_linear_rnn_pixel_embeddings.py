@@ -33,7 +33,7 @@ def default_config() -> Dict[str, Any]:
         "num_train_samples": 10_000,
         "num_test_samples": 2_000,
         "batch_size": 256,
-        "learning_rate": 1e-3,
+        "learning_rate": 3e-4,
         "optimizer": "adamw",
         "random_seed": 42,
         "d_model": 64,
@@ -51,11 +51,11 @@ def init_params(config: Dict[str, Any]) -> Tuple[Dict[str, Array], Iterator[Safe
     hidden_dim = config["hidden_dim"]
     recurrent_scale = config["recurrent_scale"]
 
+    a_noise = jax.random.normal(next(key_gen).get(), (hidden_dim, hidden_dim)) * (0.01 / jnp.sqrt(hidden_dim))
     params = {
         "position_embedding": jax.random.normal(next(key_gen).get(), (SEQ_LEN, d_model)) * 0.02,
         "value_embedding": jax.random.normal(next(key_gen).get(), (NUM_PIXEL_VALUES, d_model)) * 0.02,
-        "A": jax.random.normal(next(key_gen).get(), (hidden_dim, hidden_dim))
-        * (recurrent_scale / jnp.sqrt(hidden_dim)),
+        "A": recurrent_scale * jnp.eye(hidden_dim, dtype=jnp.float32) + a_noise,
         "B": jax.random.normal(next(key_gen).get(), (hidden_dim, d_model)) * (1.0 / jnp.sqrt(d_model)),
         "b": jnp.zeros((hidden_dim,), dtype=jnp.float32),
         "W_out": jax.random.normal(next(key_gen).get(), (NUM_CLASSES, hidden_dim)) * (1.0 / jnp.sqrt(hidden_dim)),
