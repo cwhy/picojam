@@ -67,14 +67,15 @@ def init_params(config: Dict[str, Any]) -> Tuple[Dict[str, Array], Iterator[Safe
 def _forward_single(params: Dict[str, Array], pixel_tokens: Array) -> Array:
     x_seq = params["position_embedding"] + params["value_embedding"][pixel_tokens]
 
-    def step(h_prev: Array, x_t: Array) -> Tuple[Array, None]:
+    def step(h_prev: Array, x_t: Array) -> Tuple[Array, Array]:
         h_next = params["A"] @ h_prev + params["B"] @ x_t + params["b"]
-        return h_next, None
+        return h_next, h_next
 
     hidden_dim = params["A"].shape[0]
     h0 = jnp.zeros((hidden_dim,), dtype=jnp.float32)
-    h_T, _ = jax.lax.scan(step, h0, x_seq)
-    logits = params["W_out"] @ h_T + params["c"]
+    _, hidden_states = jax.lax.scan(step, h0, x_seq)
+    h_mean = jnp.mean(hidden_states, axis=0)
+    logits = params["W_out"] @ h_mean + params["c"]
     return logits
 
 
