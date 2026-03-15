@@ -39,6 +39,7 @@ def default_config() -> Dict[str, Any]:
         "d_model": 64,
         "hidden_dim": 128,
         "recurrent_scale": 0.85,
+        "max_grad_norm": 1.0,
         "eval_every": 1,
     }
 
@@ -96,8 +97,12 @@ def train_step(
     opt_state: optax.OptState,
     batch_pixel_tokens: Array,
     batch_labels: Array,
+    max_grad_norm: float,
 ) -> Tuple[Dict[str, Array], optax.OptState, Array]:
     loss_value, grads = jax.value_and_grad(loss_batch)(params, batch_pixel_tokens, batch_labels)
+    grad_norm = optax.global_norm(grads)
+    clip_coef = jnp.minimum(1.0, max_grad_norm / (grad_norm + 1e-6))
+    grads = jax.tree_util.tree_map(lambda g: g * clip_coef, grads)
     updates, new_opt_state = optimizer.update(grads, opt_state, params)
     new_params = optax.apply_updates(params, updates)
     return new_params, new_opt_state, loss_value
@@ -128,6 +133,7 @@ def apply_overrides(config: Dict[str, Any], args: argparse.Namespace) -> Dict[st
         "learning_rate": args.learning_rate,
         "d_model": args.d_model,
         "hidden_dim": args.hidden_dim,
+        "max_grad_norm": args.max_grad_norm,
         "eval_every": args.eval_every,
         "random_seed": args.seed,
     }
@@ -148,6 +154,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=None)
     parser.add_argument("--d-model", type=int, default=None)
     parser.add_argument("--hidden-dim", type=int, default=None)
+    parser.add_argument("--max-grad-norm", type=float, default=None)
     parser.add_argument("--eval-every", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     return parser.parse_args()
@@ -197,6 +204,7 @@ def main() -> None:
                 opt_state,
                 x_shuffled[start:end],
                 y_shuffled[start:end],
+                config["max_grad_norm"],
             )
             epoch_loss += float(loss_value)
 
